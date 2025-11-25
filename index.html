@@ -1,0 +1,477 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tank of Duty - Multiplayer Tank Combat</title>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0a0e14 0%, #1a1f2e 100%);
+            color: #e0e6ed;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Lobby Styles */
+        #lobby {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .lobby-card {
+            background: rgba(26, 31, 46, 0.95);
+            border: 2px solid #0cf;
+            border-radius: 12px;
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 8px 32px rgba(0, 200, 255, 0.2);
+        }
+
+        .lobby-title {
+            font-size: 36px;
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #0cf, #f0f);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .lobby-subtitle {
+            text-align: center;
+            color: #8fa3b8;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+            .input-group label {
+                display: block;
+                margin-bottom: 8px;
+                color: #0cf;
+                font-weight: 500;
+            }
+
+            .input-group input {
+                width: 100%;
+                padding: 12px;
+                background: rgba(10, 14, 20, 0.8);
+                border: 1px solid #0cf;
+                border-radius: 6px;
+                color: #fff;
+                font-size: 16px;
+            }
+
+                .input-group input:focus {
+                    outline: none;
+                    border-color: #f0f;
+                    box-shadow: 0 0 12px rgba(255, 0, 255, 0.3);
+                }
+
+            .input-group small {
+                display: block;
+                margin-top: 5px;
+                color: #8fa3b8;
+                font-size: 13px;
+            }
+
+        .button-group {
+            display: flex;
+            gap: 12px;
+            margin-top: 30px;
+        }
+
+        button {
+            flex: 1;
+            padding: 14px 24px;
+            font-size: 16px;
+            font-weight: bold;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+        }
+
+            button:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+            }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #0cf, #08a);
+            color: #fff;
+        }
+
+            .btn-primary:hover:not(:disabled) {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 20px rgba(0, 200, 255, 0.4);
+            }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #f0f, #a0a);
+            color: #fff;
+        }
+
+            .btn-secondary:hover:not(:disabled) {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 20px rgba(255, 0, 255, 0.4);
+            }
+
+        .status {
+            margin-top: 20px;
+            padding: 12px;
+            background: rgba(0, 200, 255, 0.1);
+            border: 1px solid #0cf;
+            border-radius: 6px;
+            text-align: center;
+            font-size: 14px;
+            display: none;
+        }
+
+            .status.active {
+                display: block;
+            }
+
+            .status.error {
+                background: rgba(255, 0, 100, 0.1);
+                border-color: #f06;
+                color: #f88;
+            }
+
+            .status.success {
+                background: rgba(0, 255, 100, 0.1);
+                border-color: #0f6;
+                color: #8f8;
+            }
+
+        /* Game Container Styles */
+        #game-container {
+            display: none;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+            #game-container.active {
+                display: flex;
+            }
+
+        .game-header {
+            background: rgba(10, 14, 20, 0.9);
+            border-bottom: 2px solid #0cf;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .game-title-small {
+            font-size: 20px;
+            font-weight: bold;
+            color: #0cf;
+        }
+
+        .game-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-small {
+            padding: 8px 16px;
+            font-size: 14px;
+            border-radius: 4px;
+        }
+
+        .tank-of-duty-container {
+            position: relative;
+            flex: 1;
+            background: #0a0e14;
+            overflow: hidden;
+        }
+
+            .tank-of-duty-container canvas {
+                width: 100%;
+                height: 100%;
+                display: block;
+            }
+
+        .tank-of-duty-hud {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            color: #d9e8ff;
+            font-family: 'Segoe UI', sans-serif;
+            text-shadow: 0 0 8px rgba(0, 255, 255, 0.6);
+            pointer-events: none;
+            max-width: 360px;
+        }
+
+        .instructions {
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(0, 200, 255, 0.05);
+            border-left: 3px solid #0cf;
+            border-radius: 4px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+            .instructions h3 {
+                color: #0cf;
+                margin-bottom: 10px;
+                font-size: 16px;
+            }
+
+            .instructions ul {
+                margin-left: 20px;
+            }
+
+            .instructions li {
+                margin-bottom: 6px;
+            }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Lobby Screen -->
+        <div id="lobby">
+            <div class="lobby-card">
+                <h1 class="lobby-title">TANK OF DUTY</h1>
+                <p class="lobby-subtitle">Neon Twin-Stick Tank Combat</p>
+
+                <div class="input-group">
+                    <label for="player-name">Your Name</label>
+                    <input type="text" id="player-name" placeholder="Enter your tank commander name" maxlength="20">
+                </div>
+
+                <div class="input-group">
+                    <label for="session-code">Session Code (For Multiplayer)</label>
+                    <input type="text" id="session-code" placeholder="Enter 4-6 character session code" maxlength="20">
+                    <small>Leave empty for single player, or create/join a session</small>
+                </div>
+
+                <div class="button-group">
+                    <button class="btn-primary" id="start-single">Single Player</button>
+                    <button class="btn-secondary" id="start-multi">Multiplayer</button>
+                </div>
+
+                <div id="status" class="status"></div>
+
+                <div class="instructions">
+                    <h3>How to Play</h3>
+                    <ul>
+                        <li><strong>WASD</strong> - Move tank</li>
+                        <li><strong>Mouse</strong> - Aim turret</li>
+                        <li><strong>Left Click</strong> - Fire</li>
+                        <li><strong>Goal</strong> - First to 10 kills wins!</li>
+                    </ul>
+                    <h3 style="margin-top: 15px;">Multiplayer Setup</h3>
+                    <ul>
+                        <li>Uses TripGeo TeamHub for signaling</li>
+                        <li>One player creates a session code (e.g., "TANK1")</li>
+                        <li>Other players join using the same session code</li>
+                        <li>Supports 2-8 players per session</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Game Screen -->
+        <div id="game-container">
+            <div class="game-header">
+                <div class="game-title-small">TANK OF DUTY</div>
+                <div class="game-actions">
+                    <button class="btn-small btn-primary" id="toggle-sound">🔊 Sound</button>
+                    <button class="btn-small btn-secondary" id="exit-game">Exit</button>
+                </div>
+            </div>
+            <div class="tank-of-duty-container">
+                <canvas id="tank-canvas"></canvas>
+                <div class="tank-of-duty-hud" id="tank-hud"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CRITICAL: Load SignalR BEFORE modules (like Battleships does) -->
+    <script src="https://labs.tripgeo.com/tankofduty/signalr.js"></script>
+
+    <!-- Now load the game module -->
+    <script type="module">
+        import { initTankOfDutyStandalone, disposeTankOfDuty, getSoundManager } from './tankofduty-standalone.js';
+
+        // DOM elements
+        const lobby = document.getElementById('lobby');
+        const gameContainer = document.getElementById('game-container');
+        const playerNameInput = document.getElementById('player-name');
+        const sessionCodeInput = document.getElementById('session-code');
+        const startSingleBtn = document.getElementById('start-single');
+        const startMultiBtn = document.getElementById('start-multi');
+        const exitGameBtn = document.getElementById('exit-game');
+        const toggleSoundBtn = document.getElementById('toggle-sound');
+        const status = document.getElementById('status');
+
+        // Load saved settings
+        const savedName = localStorage.getItem('tank-player-name');
+        if (savedName) playerNameInput.value = savedName;
+
+        // Generate random player ID (like Battleships)
+        const myUserId = Math.floor(Math.random() * 10000) + 1;
+
+        function showStatus(message, type = 'info')
+        {
+            status.textContent = message;
+            status.classList.add('active');
+            status.classList.remove('error', 'success');
+            if (type === 'error') status.classList.add('error');
+            if (type === 'success') status.classList.add('success');
+        }
+
+        function hideStatus()
+        {
+            status.classList.remove('active');
+        }
+
+        async function startGame(isSinglePlayer)
+        {
+            const playerName = playerNameInput.value.trim() || 'Tank Commander';
+            const sessionCode = sessionCodeInput.value.trim().toUpperCase();
+
+            // Validate multiplayer settings
+            if (!isSinglePlayer && !sessionCode)
+            {
+                showStatus('Please enter a session code for multiplayer', 'error');
+                return;
+            }
+
+            // Save settings
+            localStorage.setItem('tank-player-name', playerName);
+
+            // Disable buttons during connection
+            startSingleBtn.disabled = true;
+            startMultiBtn.disabled = true;
+
+            if (!isSinglePlayer)
+            {
+                showStatus('Connecting to TeamHub...', 'info');
+            }
+
+            // Setup game options
+            const options = {
+                canvasId: 'tank-canvas',
+                hudId: 'tank-hud',
+                myUserId: myUserId,
+                myUsername: playerName,
+                isHost: true,
+                isSinglePlayer: isSinglePlayer,
+                players: [
+                    { userId: myUserId, userName: playerName }
+                ],
+                sessionId: sessionCode
+            };
+
+            try
+            {
+                // Initialize game
+                await initTankOfDutyStandalone(options);
+
+                // Show game screen
+                lobby.style.display = 'none';
+                gameContainer.classList.add('active');
+                hideStatus();
+
+                if (!isSinglePlayer)
+                {
+                    console.log('[UI] Multiplayer game started with TeamHub');
+                }
+            } catch (err)
+            {
+                console.error('Failed to start game:', err);
+                showStatus('Failed to start game: ' + err.message, 'error');
+                startSingleBtn.disabled = false;
+                startMultiBtn.disabled = false;
+            }
+        }
+
+        function exitGame()
+        {
+            disposeTankOfDuty();
+            gameContainer.classList.remove('active');
+            lobby.style.display = 'flex';
+            hideStatus();
+            startSingleBtn.disabled = false;
+            startMultiBtn.disabled = false;
+        }
+
+        // Event listeners
+        startSingleBtn.addEventListener('click', () =>
+        {
+            startGame(true);
+        });
+
+        startMultiBtn.addEventListener('click', () =>
+        {
+            startGame(false);
+        });
+
+        exitGameBtn.addEventListener('click', () =>
+        {
+            if (confirm('Exit current game?'))
+            {
+                exitGame();
+            }
+        });
+
+        toggleSoundBtn.addEventListener('click', () =>
+        {
+            const soundMgr = getSoundManager();
+            if (soundMgr)
+            {
+                soundMgr.toggleMute();
+                const icon = soundMgr.enabled ? '🔊' : '🔇';
+                toggleSoundBtn.textContent = icon + ' Sound';
+            }
+        });
+
+        // Enter key to start
+        playerNameInput.addEventListener('keypress', (e) =>
+        {
+            if (e.key === 'Enter')
+            {
+                startGame(true);
+            }
+        });
+
+        sessionCodeInput.addEventListener('keypress', (e) =>
+        {
+            if (e.key === 'Enter')
+            {
+                startGame(false);
+            }
+        });
+    </script>
+</body>
+</html>
