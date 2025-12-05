@@ -1,5 +1,16 @@
 // TripGeo.Client/wwwroot/geobox-assets/games/tankofduty/tankofduty-game.js
 // Game logic for Tank of Duty with WebRTC peer-to-peer synchronization
+//
+// Reworked to load GeoJSON building polygons from:
+//   https://mapsmania.github.io/globalbuilding/building.geojson
+//
+// Features added:
+// - Host fetches & simplifies polygons, builds spatial index, broadcasts map
+// - Clients receive map and build their spatial index
+// - Polygon-circle collision for tanks & projectiles
+// - Projectile reflection against nearest polygon edge
+// - Dynamic nearby-building queries for rendering & collision (grid index)
+// - No external libraries required
 
 export class TankGame
 {
@@ -17,7 +28,9 @@ export class TankGame
 
         this.players = new Map();
         this.projectiles = new Map();
-        this.buildings = [];
+        this.buildings = [];          // array of { id, type:'polygon', points:[{x,y}], bbox:{minX,minY,maxX,maxY}, color }
+        this._gridIndex = null;       // spatial index (initialized after buildings are loaded)
+        this._gridCellSize = 320;     // world units (tweak for perf/detail)
 
         this.localInput = {
             forward: 0,
@@ -40,21 +53,40 @@ export class TankGame
             '#fa0', '#0af', '#f8a', '#8f8'
         ];
 
-        // Host generates the map and broadcasts it
+        // Host generates (loads) the map and broadcasts it
         if (this.isHost)
         {
-            this.initBuildings();
-            if (!this.isSinglePlayer)
+            // Async load - host loads GeoJSON, simplifies & builds index, then broadcasts
+            this.initBuildingsFromGeoJson().then(() =>
             {
-                // Broadcast map to all players
-                setTimeout(() =>
+                if (!this.isSinglePlayer)
                 {
-                    this.broadcastMessage('tank-map-init', {
-                        buildings: this.buildings,
-                        worldSize: this.world
-                    });
-                }, 50);
-            }
+                    // Broadcast map to all players (send simplified polygons)
+                    // NOTE: serializing polygon points across network — reasonably sized after simplification
+                    setTimeout(() =>
+                    {
+                        this.broadcastMessage('tank-map-init', {
+                            buildings: this.buildings,
+                            worldSize: this.world
+                        });
+                    }, 50);
+                }
+            }).catch(err =>
+            {
+                console.error('[TankGame] Error loading GeoJSON buildings:', err);
+                // Fallback to procedural grid if loading fails
+                this.initBuildings(); // your original generator (keeps backwards compat)
+                if (!this.isSinglePlayer)
+                {
+                    setTimeout(() =>
+                    {
+                        this.broadcastMessage('tank-map-init', {
+                            buildings: this.buildings,
+                            worldSize: this.world
+                        });
+                    }, 50);
+                }
+            });
         }
 
         this.initPlayers();
@@ -63,9 +95,133 @@ export class TankGame
         console.log('[TankGame] Initialized', { isHost: this.isHost, players: this.players.size });
     }
 
+    // ---------------------------
+    // NEW: Host-side GeoJSON loader
+    // ---------------------------
+    async initBuildingsFromGeoJson()
+    {
+        const GEOJSON_URL = 'https://mapsmania.github.io/globalbuilding/building.geojson';
+        console.log('[TankGame] Loading GeoJSON from', GEOJSON_URL);
+
+        const res = await fetch(GEOJSON_URL);
+        if (!res.ok) throw new Error(`Failed to fetch GeoJSON (${res.status})`);
+        const geojson = await res.json();
+
+        // Compute lat/lon bbox of features (we assume Polygons and MultiPolygons)
+        let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+
+        const extractRings = (geom) =>
+        {
+            if (!geom) return [];
+            if (geom.type === 'Polygon') return geom.coordinates;
+            if (geom.type === 'MultiPolygon')
+            {
+                // flatten all polygon first rings
+                return geom.coordinates.flat();
+            }
+            return [];
+        };
+
+        for (const feature of geojson.features)
+        {
+            const rings = extractRings(feature.geometry);
+            for (const ring of rings)
+            {
+                for (const [lon, lat] of ring)
+                {
+                    if (lon < minLon) minLon = lon;
+                    if (lon > maxLon) maxLon = lon;
+                    if (lat < minLat) minLat = lat;
+                    if (lat > maxLat) maxLat = lat;
+                }
+            }
+        }
+
+        if (!isFinite(minLon))
+        {
+            throw new Error('GeoJSON has no coordinate data');
+        }
+
+        // Add small padding (degrees)
+        const padDegLon = (maxLon - minLon) * 0.02 || 0.0001;
+        const padDegLat = (maxLat - minLat) * 0.02 || 0.0001;
+        minLon -= padDegLon; maxLon += padDegLon;
+        minLat -= padDegLat; maxLat += padDegLat;
+
+        // Convert lat/lon to world coordinates (fit bbox to this.world)
+        const lonToX = (lon) => {
+            return ((lon - minLon) / (maxLon - minLon)) * this.world.width;
+        };
+        const latToY = (lat) => {
+            // flip Y so larger lat = smaller y (world origin top-left)
+            return this.world.height - ((lat - minLat) / (maxLat - minLat)) * this.world.height;
+        };
+
+        // Options
+        const simplifyEpsilonInWorldUnits = 2.5; // increase to reduce vertices more (tweak)
+        let idCounter = 0;
+        const newBuildings = [];
+
+        for (const feature of geojson.features)
+        {
+            const rings = extractRings(feature.geometry); // array of rings (outer + possible inner holes)
+            if (!rings || rings.length === 0) continue;
+
+            // We'll only use the outer ring for collision/rendering (ignore holes for simplicity)
+            const outer = rings[0];
+            if (!outer || outer.length < 3) continue;
+
+            // Convert to world coords
+            const pts = outer.map(([lon, lat]) => ({ x: lonToX(lon), y: latToY(lat) }));
+
+            // Simplify in world units using RDP
+            const simplified = rdpSimplify(pts, simplifyEpsilonInWorldUnits);
+
+            // Ensure polygons are valid (at least triangle)
+            if (simplified.length < 3) continue;
+
+            // Calculate bounding box
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const p of simplified)
+            {
+                if (p.x < minX) minX = p.x;
+                if (p.x > maxX) maxX = p.x;
+                if (p.y < minY) minY = p.y;
+                if (p.y > maxY) maxY = p.y;
+            }
+
+            // Random color palette (or use feature.properties if available)
+            const neonColors = [
+                '#8b5cf6', '#06b6d4', '#f97316', '#f43f5e',
+                '#10b981', '#facc15', '#60a5fa', '#ec4899'
+            ];
+            const color = feature.properties && feature.properties.fill || neonColors[idCounter % neonColors.length];
+
+            newBuildings.push({
+                id: idCounter++,
+                type: 'polygon',
+                points: simplified, // [{x,y}, ...]
+                bbox: { minX, minY, maxX, maxY },
+                color,
+                sourceProps: feature.properties || {}
+            });
+        }
+
+        // Replace buildings array with new simplified polygons
+        this.buildings = newBuildings;
+
+        // Build spatial index (uniform grid)
+        this._buildGridIndex();
+
+        console.log(`[TankGame] Loaded ${this.buildings.length} buildings from GeoJSON (simplified).`);
+    }
+
+    // ---------------------------
+    // ORIGINAL fallback procedural generator (kept for fallback)
+    // ---------------------------
     initBuildings()
     {
-        // Generate city-block layout with streets
+        // Generate city-block layout with streets (unchanged fallback)
         const blockSize = 400;  // Size of each city block
         const streetWidth = 150; // Width of streets (wide enough for tanks)
         const buildingMargin = 20; // Space between buildings in a block
@@ -162,12 +318,109 @@ export class TankGame
             }
         }
 
-        console.log(`[TankGame] Generated ${this.buildings.length} buildings in city grid`);
+        // If procedural buildings created, build grid index from them too:
+        if (this.buildings.length && !this.buildings[0].type)
+        {
+            // Convert old rectangles to polygon-like objects for compatibility
+            this.buildings = this.buildings.map((r, idx) => {
+                return {
+                    id: idx,
+                    type: 'rect',
+                    x: r.x, y: r.y, w: r.w, h: r.h,
+                    bbox: { minX: r.x, minY: r.y, maxX: r.x + r.w, maxY: r.y + r.h },
+                    color: r.color || '#888',
+                    pattern: r.pattern || 'horizontal'
+                };
+            });
+            this._buildGridIndex();
+        }
+
+        console.log(`[TankGame] Generated ${this.buildings.length} buildings in city grid (fallback)`);
     }
 
-    // Fix for tankofduty-game.js - Prevent spawning inside buildings
-    // Replace the findSafeSpawnPoint function (around line 187) with this improved version:
+    // ---------------------------
+    // Build a simple uniform grid index for spatial queries (no external libs)
+    // ---------------------------
+    _buildGridIndex()
+    {
+        // build grid cells keyed by col,row
+        const cellSize = this._gridCellSize;
+        const cols = Math.ceil(this.world.width / cellSize);
+        const rows = Math.ceil(this.world.height / cellSize);
 
+        const grid = new Map(); // key => array of building refs
+
+        const cellKey = (c, r) => `${c},${r}`;
+
+        for (const b of this.buildings)
+        {
+            // convert bbox to cell range
+            const minC = Math.max(0, Math.floor(b.bbox.minX / cellSize));
+            const maxC = Math.min(cols - 1, Math.floor(b.bbox.maxX / cellSize));
+            const minR = Math.max(0, Math.floor(b.bbox.minY / cellSize));
+            const maxR = Math.min(rows - 1, Math.floor(b.bbox.maxY / cellSize));
+
+            for (let c = minC; c <= maxC; c++)
+            {
+                for (let r = minR; r <= maxR; r++)
+                {
+                    const k = cellKey(c, r);
+                    if (!grid.has(k)) grid.set(k, []);
+                    grid.get(k).push(b);
+                }
+            }
+        }
+
+        this._gridIndex = {
+            grid,
+            cellSize,
+            cols,
+            rows,
+            cellKey
+        };
+    }
+
+    // Query nearby buildings by world X,Y and radius (returns unique building refs)
+    queryNearbyBuildings(x, y, radius = 400)
+    {
+        if (!this._gridIndex) return [];
+
+        const { grid, cellSize, cols, rows, cellKey } = this._gridIndex;
+
+        const minC = Math.max(0, Math.floor((x - radius) / cellSize));
+        const maxC = Math.min(cols - 1, Math.floor((x + radius) / cellSize));
+        const minR = Math.max(0, Math.floor((y - radius) / cellSize));
+        const maxR = Math.min(rows - 1, Math.floor((y + radius) / cellSize));
+
+        const seen = new Set();
+        const results = [];
+
+        for (let c = minC; c <= maxC; c++)
+        {
+            for (let r = minR; r <= maxR; r++)
+            {
+                const k = cellKey(c, r);
+                const list = grid.get(k);
+                if (!list) continue;
+                for (const b of list)
+                {
+                    if (seen.has(b.id)) continue;
+                    seen.add(b.id);
+                    // coarse bbox distance test
+                    const dx = Math.max(0, Math.max(b.bbox.minX - x, x - b.bbox.maxX));
+                    const dy = Math.max(0, Math.max(b.bbox.minY - y, y - b.bbox.maxY));
+                    const distSq = dx*dx + dy*dy;
+                    if (distSq <= radius*radius) results.push(b);
+                }
+            }
+        }
+
+        return results;
+    }
+
+    // ---------------------------
+    // Fix for tankofduty-game.js - Prevent spawning inside buildings (keeps same)
+    // ---------------------------
     findSafeSpawnPoint(playerIndex, totalPlayers)
     {
         // Create spawn points around the map edges, evenly distributed
@@ -191,7 +444,7 @@ export class TankGame
         for (let attempt = 0; attempt < 50; attempt++)
         {
             // Increase search radius on each attempt
-            const searchRadius = 200 + (attempt * 50); // Start at 200, increase to 2700
+            const searchRadius = 200 + (attempt * 50); // Start at 200, increase to ~2700
             const angle = Math.random() * Math.PI * 2;
             const distance = Math.random() * searchRadius;
             const x = basePos.x + Math.cos(angle) * distance;
@@ -533,6 +786,9 @@ export class TankGame
         }
     }
 
+    // ---------------------------
+    // Updated projectile update: polygon-aware bouncing/reflection
+    // ---------------------------
     updateProjectiles(dt)
     {
         const toDelete = [];
@@ -542,7 +798,7 @@ export class TankGame
             proj.x += proj.vx * dt;
             proj.y += proj.vy * dt;
 
-            // Wall bouncing
+            // Wall bouncing (world bounds)
             if (proj.x < 0 || proj.x > this.world.width)
             {
                 proj.vx *= -1;
@@ -556,27 +812,60 @@ export class TankGame
                 proj.bounces++;
             }
 
-            // Building bouncing
-            this.buildings.forEach((bld) =>
+            // Building bouncing (polygon aware)
+            // Query nearby buildings around projectile
+            const nearby = this.queryNearbyBuildings(proj.x, proj.y, 40);
+            for (const bld of nearby)
             {
-                if (proj.x > bld.x && proj.x < bld.x + bld.w &&
-                    proj.y > bld.y && proj.y < bld.y + bld.h)
+                if (bld.type === 'rect')
                 {
-                    const cx = bld.x + bld.w / 2;
-                    const cy = bld.y + bld.h / 2;
-                    const dx = proj.x - cx;
-                    const dy = proj.y - cy;
-                    if (Math.abs(dx) > Math.abs(dy))
+                    // legacy rect handling
+                    if (proj.x > bld.x && proj.x < bld.x + bld.w &&
+                        proj.y > bld.y && proj.y < bld.y + bld.h)
                     {
-                        proj.vx *= -1;
+                        const cx = bld.x + bld.w / 2;
+                        const cy = bld.y + bld.h / 2;
+                        const dx = proj.x - cx;
+                        const dy = proj.y - cy;
+                        if (Math.abs(dx) > Math.abs(dy))
+                        {
+                            proj.vx *= -1;
+                        }
+                        else
+                        {
+                            proj.vy *= -1;
+                        }
+                        proj.bounces++;
                     }
-                    else
-                    {
-                        proj.vy *= -1;
-                    }
-                    proj.bounces++;
                 }
-            });
+                else if (bld.type === 'polygon')
+                {
+                    // If projectile inside polygon, reflect against nearest edge normal
+                    if (pointInPolygon({x: proj.x, y: proj.y}, bld.points))
+                    {
+                        const { nearestSeg, nearestPoint } = nearestSegmentToPoint(proj.x, proj.y, bld.points);
+                        if (nearestSeg)
+                        {
+                            const nx = -(nearestSeg.y2 - nearestSeg.y1);
+                            const ny = (nearestSeg.x2 - nearestSeg.x1);
+                            const nlen = Math.hypot(nx, ny) || 1;
+                            const nxu = nx / nlen;
+                            const nyu = ny / nlen;
+
+                            // reflect velocity: v' = v - 2*(v·n)*n
+                            const vdotn = proj.vx * nxu + proj.vy * nyu;
+                            proj.vx = proj.vx - 2 * vdotn * nxu;
+                            proj.vy = proj.vy - 2 * vdotn * nyu;
+
+                            // move projectile slightly outside to avoid sticking
+                            proj.x = nearestPoint.x + nxu * 2;
+                            proj.y = nearestPoint.y + nyu * 2;
+
+                            proj.bounces++;
+                        }
+                    }
+                }
+            }
 
             // Hit detection
             this.players.forEach((tank) =>
@@ -592,7 +881,7 @@ export class TankGame
             });
 
             // Lifetime / bounce limit
-            if (proj.bounces > 5 || performance.now() - proj.createdAt > 8000)
+            if (proj.bounces > 6 || performance.now() - proj.createdAt > 8000)
             {
                 toDelete.push(proj.id);
             }
@@ -600,7 +889,6 @@ export class TankGame
 
         toDelete.forEach(id => this.projectiles.delete(id));
     }
-
 
     handleTankHit(tank, projectile)
     {
@@ -730,14 +1018,40 @@ export class TankGame
         }
     }
 
+    // ---------------------------
+    // Updated collision: circle-polygon + rect fallback
+    // ---------------------------
     collideWithBuildings(x, y, radius)
     {
-        return this.buildings.some((bld) =>
+        // Query nearby buildings (radius) and test accurately
+        const nearby = this.queryNearbyBuildings(x, y, radius + 10);
+
+        return nearby.some((bld) =>
         {
-            const closestX = Math.max(bld.x, Math.min(x, bld.x + bld.w));
-            const closestY = Math.max(bld.y, Math.min(y, bld.y + bld.h));
-            const dist = Math.hypot(x - closestX, y - closestY);
-            return dist < radius;
+            if (bld.type === 'rect')
+            {
+                const closestX = Math.max(bld.x, Math.min(x, bld.x + bld.w));
+                const closestY = Math.max(bld.y, Math.min(y, bld.y + bld.h));
+                const dist = Math.hypot(x - closestX, y - closestY);
+                return dist < radius;
+            }
+
+            if (bld.type === 'polygon')
+            {
+                // If center of circle is inside polygon -> collide
+                if (pointInPolygon({x, y}, bld.points)) return true;
+
+                // If distance to any edge < radius -> collide
+                for (let i = 0; i < bld.points.length; i++)
+                {
+                    const a = bld.points[i];
+                    const b = bld.points[(i + 1) % bld.points.length];
+                    const d = distancePointToSegment(x, y, a.x, a.y, b.x, b.y);
+                    if (d < radius) return true;
+                }
+            }
+
+            return false;
         });
     }
 
@@ -769,8 +1083,13 @@ export class TankGame
         {
             case 'tank-map-init':
                 // Receive map from host
+                // Expect buildings as simplified polygons (or fallback rect list)
                 this.buildings = data.buildings || [];
                 this.world = data.worldSize || this.world;
+
+                // Rebuild client-side spatial index so collision/rendering queries are fast
+                this._buildGridIndex();
+
                 console.log('[TankGame] Received map from host:', this.buildings.length, 'buildings');
                 break;
 
@@ -802,7 +1121,6 @@ export class TankGame
                     };
                 }
                 break;
-
 
             case 'tank-state-update':
                 data.players.forEach(pd =>
@@ -926,4 +1244,128 @@ export class TankGame
         this.players.clear();
         this.projectiles.clear();
     }
+}
+
+// ---------------------------
+// Utility functions (RDP simplify, point-in-polygon, distance-to-segment, nearest edge)
+// ---------------------------
+
+// Ramer-Douglas-Peucker (operates on array of {x,y})
+function rdpSimplify(points, epsilon)
+{
+    if (!points || points.length < 3) return points.slice();
+
+    const sq = (n) => n * n;
+
+    function perpendicularDistance(p, a, b)
+    {
+        const x = p.x, y = p.y;
+        const x1 = a.x, y1 = a.y;
+        const x2 = b.x, y2 = b.y;
+
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+
+        if (dx === 0 && dy === 0) return Math.hypot(x - x1, y - y1);
+
+        const t = ((x - x1) * dx + (y - y1) * dy) / (dx*dx + dy*dy);
+        const projx = x1 + t * dx;
+        const projy = y1 + t * dy;
+        return Math.hypot(x - projx, y - projy);
+    }
+
+    function rdp(start, end, arr, out)
+    {
+        let maxDist = 0;
+        let index = -1;
+        for (let i = start + 1; i < end; i++)
+        {
+            const d = perpendicularDistance(arr[i], arr[start], arr[end]);
+            if (d > maxDist) { index = i; maxDist = d; }
+        }
+
+        if (maxDist > epsilon && index !== -1)
+        {
+            rdp(start, index, arr, out);
+            rdp(index, end, arr, out);
+        }
+        else
+        {
+            out.push(arr[start]);
+        }
+    }
+
+    const out = [];
+    rdp(0, points.length - 1, points, out);
+    out.push(points[points.length - 1]);
+    return out;
+}
+
+// point-in-polygon (winding / raycast)
+function pointInPolygon(pt, poly)
+{
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++)
+    {
+        const xi = poly[i].x, yi = poly[i].y;
+        const xj = poly[j].x, yj = poly[j].y;
+        const intersect = ((yi > pt.y) !== (yj > pt.y)) &&
+            (pt.x < (xj - xi) * (pt.y - yi) / ((yj - yi) || 1e-9) + xi);
+        if (intersect) inside = !inside;
+    }
+    return inside;
+}
+
+// distance from point to segment
+function distancePointToSegment(px, py, x1, y1, x2, y2)
+{
+    const A = px - x1;
+    const B = py - y1;
+    const C = x2 - x1;
+    const D = y2 - y1;
+
+    const dot = A * C + B * D;
+    const lenSq = C * C + D * D;
+    let param = lenSq !== 0 ? dot / lenSq : -1;
+
+    let xx, yy;
+
+    if (param < 0) { xx = x1; yy = y1; }
+    else if (param > 1) { xx = x2; yy = y2; }
+    else { xx = x1 + param * C; yy = y1 + param * D; }
+
+    return Math.hypot(px - xx, py - yy);
+}
+
+// find nearest segment to point, returns { nearestSeg: {x1,y1,x2,y2}, nearestPoint:{x,y}, dist }
+function nearestSegmentToPoint(px, py, poly)
+{
+    let best = { dist: Infinity, nearestSeg: null, nearestPoint: null };
+    for (let i = 0; i < poly.length; i++)
+    {
+        const a = poly[i];
+        const b = poly[(i + 1) % poly.length];
+
+        // project point onto segment AB
+        const x1 = a.x, y1 = a.y;
+        const x2 = b.x, y2 = b.y;
+        const A = px - x1;
+        const B = py - y1;
+        const C = x2 - x1;
+        const D = y2 - y1;
+        const dot = A * C + B * D;
+        const lenSq = C*C + D*D;
+        let t = lenSq !== 0 ? dot / lenSq : 0;
+        t = Math.max(0, Math.min(1, t));
+        const projx = x1 + C * t;
+        const projy = y1 + D * t;
+        const d = Math.hypot(px - projx, py - projy);
+        if (d < best.dist)
+        {
+            best.dist = d;
+            best.nearestSeg = { x1, y1, x2, y2 };
+            best.nearestPoint = { x: projx, y: projy };
+        }
+    }
+    return best;
 }
