@@ -1,9 +1,9 @@
 // tankofduty-standalone.js
 // Standalone version using TripGeo TeamHub (like Battleships)
 
-import { TankGame } from './tankofduty-game.js';
-import { TankRenderer } from './tankofduty-renderer.js';
-import { TankSoundManager } from './tankofduty-sound.js';
+import { TankGame } from './breakout-game.js';
+import { TankRenderer } from './breakout-renderer.js';
+import { TankSoundManager } from './breakout-sound.js';
 
 let gameInstance = null;
 let renderer = null;
