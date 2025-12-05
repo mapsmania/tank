@@ -21,7 +21,7 @@ export class TankSoundManager
     loadSound(name, path)
     {
         // Create audio element
-        const audio = new Audio(`/sounds/tankofduty/${path}`);
+        const audio = new Audio(`https://labs.tripgeo.com/sounds/tankofduty/${path}`);
         audio.volume = this.volume;
         audio.preload = 'auto';
 
