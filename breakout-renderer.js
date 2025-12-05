@@ -1,5 +1,8 @@
 // TripGeo.Client/wwwroot/geobox-assets/games/tankofduty/tankofduty-renderer.js
-// Rendering for Tank of Duty
+// Rendering for Tank of Duty (polygon-capable)
+// Reworked to support polygon buildings (bld.type === 'polygon' with bld.points [{x,y},...])
+// Backwards-compatible with rectangle buildings { x,y,w,h }
+// Renders only buildings within camera view for performance.
 
 export class TankRenderer
 {
@@ -35,6 +38,206 @@ export class TankRenderer
         ctx.closePath();
     }
 
+    // -------------------------
+    // Polygon helper methods
+    // -------------------------
+
+    // Draw polygon given an array of [x,y] pairs OR [{x,y}, ...]
+    drawPolygonPath(ctx, coords)
+    {
+        if (!coords || coords.length === 0) return;
+
+        // Accept either [[x,y],...] or [{x,y},...]
+        const first = Array.isArray(coords[0]) ? { x: coords[0][0], y: coords[0][1] } : coords[0];
+
+        ctx.beginPath();
+        ctx.moveTo(first.x, first.y);
+
+        for (let i = 1; i < coords.length; i++)
+        {
+            const p = Array.isArray(coords[i]) ? { x: coords[i][0], y: coords[i][1] } : coords[i];
+            ctx.lineTo(p.x, p.y);
+        }
+
+        ctx.closePath();
+    }
+
+    // Check if building bbox intersects current camera view (fast culling)
+    buildingInView(bbox, camRect)
+    {
+        if (!bbox) return true;
+        return !(bbox.maxX < camRect.xMin || bbox.minX > camRect.xMax || bbox.maxY < camRect.yMin || bbox.minY > camRect.yMax);
+    }
+
+    // Draw a polygon building (outer ring only; holes are ignored if stored)
+    drawPolygonBuilding(ctx, bld)
+    {
+        // bld.points: array of {x,y}
+        if (!bld || !bld.points || bld.points.length < 3) return;
+
+        // Base dark fill
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = 'rgba(0,0,0,0.7)'; // dark interior
+        this.drawPolygonPath(ctx, bld.points);
+        ctx.fill();
+
+        // Neon interior pattern (approximate previous patterns)
+        const spacing = 18;
+        const color = bld.color || '#0cf';
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.2;
+
+        // Simple hatch: horizontal lines clipped by polygon path
+        ctx.save();
+        this.drawPolygonPath(ctx, bld.points);
+        ctx.clip();
+
+        // compute approximate bbox for poly to limit hatch lines
+        const minX = bld.bbox ? bld.bbox.minX : Math.min(...bld.points.map(p => p.x));
+        const maxX = bld.bbox ? bld.bbox.maxX : Math.max(...bld.points.map(p => p.x));
+        const minY = bld.bbox ? bld.bbox.minY : Math.min(...bld.points.map(p => p.y));
+        const maxY = bld.bbox ? bld.bbox.maxY : Math.max(...bld.points.map(p => p.y));
+
+        for (let y = minY + spacing; y < maxY; y += spacing)
+        {
+            ctx.beginPath();
+            ctx.moveTo(minX - spacing, y);
+            ctx.lineTo(maxX + spacing, y);
+            ctx.stroke();
+        }
+        ctx.restore();
+
+        // Outline
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.0;
+        this.drawPolygonPath(ctx, bld.points);
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    // Draw legacy rectangle building
+    drawRectBuilding(ctx, bld)
+    {
+        ctx.save();
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.fillRect(bld.x, bld.y, bld.w, bld.h);
+
+        ctx.strokeStyle = bld.color || '#0cf';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(bld.x, bld.y, bld.w, bld.h);
+
+        // interior pattern like before (horizontal lines for perf)
+        ctx.strokeStyle = bld.color || '#0cf';
+        ctx.lineWidth = 1;
+        const spacing = 20;
+        ctx.beginPath();
+        for (let y = bld.y + spacing; y < bld.y + bld.h; y += spacing)
+        {
+            ctx.moveTo(bld.x, y);
+            ctx.lineTo(bld.x + bld.w, y);
+        }
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    // Render only visible buildings (from gameState.buildings)
+    renderBuildings(ctx, buildings, camRect)
+    {
+        if (!buildings || buildings.length === 0) return;
+
+        for (let i = 0; i < buildings.length; i++)
+        {
+            const bld = buildings[i];
+
+            // Accept two shapes:
+            // - legacy rects: {x,y,w,h}
+            // - polygon: { type:'polygon', points:[{x,y},...], bbox }
+            // - alternative: geometry-like { geometry: { type: 'Polygon', coordinates: [...] } } (handle gracefully)
+
+            // Build a bbox if missing (cheap)
+            if (!bld.bbox)
+            {
+                if (bld.type === 'polygon' && bld.points)
+                {
+                    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                    for (const p of bld.points)
+                    {
+                        if (p.x < minX) minX = p.x;
+                        if (p.x > maxX) maxX = p.x;
+                        if (p.y < minY) minY = p.y;
+                        if (p.y > maxY) maxY = p.y;
+                    }
+                    bld.bbox = { minX, minY, maxX, maxY };
+                }
+                else if (bld.x !== undefined && bld.w !== undefined)
+                {
+                    bld.bbox = { minX: bld.x, minY: bld.y, maxX: bld.x + bld.w, maxY: bld.y + bld.h };
+                }
+                else if (bld.geometry) // geometry-like object
+                {
+                    const coords = bld.geometry.type === 'Polygon' ? bld.geometry.coordinates[0] :
+                                   (bld.geometry.type === 'MultiPolygon' ? bld.geometry.coordinates[0][0] : []);
+                    if (coords && coords.length)
+                    {
+                        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                        coords.forEach(pt => {
+                            const x = Array.isArray(pt) ? pt[0] : pt.x;
+                            const y = Array.isArray(pt) ? pt[1] : pt.y;
+                            if (x < minX) minX = x; if (x > maxX) maxX = x;
+                            if (y < minY) minY = y; if (y > maxY) maxY = y;
+                        });
+                        bld.bbox = { minX, minY, maxX, maxY };
+                    }
+                }
+            }
+
+            if (!this.buildingInView(bld.bbox, camRect)) continue;
+
+            // Draw depending on available shape
+            if (bld.type === 'polygon' && bld.points && bld.points.length > 2)
+            {
+                // Our internal format uses bld.points = [{x,y},...]
+                this.drawPolygonBuilding(ctx, bld);
+            }
+            else if (bld.geometry && (bld.geometry.type === 'Polygon' || bld.geometry.type === 'MultiPolygon'))
+            {
+                // geometry coordinates stored in geometry (array-of-arrays). Convert to our draw calls:
+                const geom = bld.geometry;
+                ctx.save();
+                ctx.fillStyle = 'rgba(0,0,0,0.7)';
+                ctx.strokeStyle = bld.color || '#0cf';
+                ctx.lineWidth = 2;
+
+                if (geom.type === 'Polygon')
+                {
+                    // draw outer ring
+                    this.drawPolygonPath(ctx, geom.coordinates[0]);
+                    ctx.fill();
+                    ctx.stroke();
+                }
+                else if (geom.type === 'MultiPolygon')
+                {
+                    for (const poly of geom.coordinates)
+                    {
+                        this.drawPolygonPath(ctx, poly[0]);
+                        ctx.fill();
+                        ctx.stroke();
+                    }
+                }
+                ctx.restore();
+            }
+            else if (bld.x !== undefined && bld.w !== undefined)
+            {
+                this.drawRectBuilding(ctx, bld);
+            }
+            // else unknown format: skip
+        }
+    }
+
+    // Render explosions (unchanged)
     renderExplosions(ctx, explosions, colours)
     {
         explosions.forEach(explosion =>
@@ -150,7 +353,7 @@ export class TankRenderer
     {
         if (!gameState) return;
 
-        const { players, projectiles, buildings, world, myUserId, colours, gameOverState } = gameState;
+        const { players, projectiles, buildings, world, myUserId, colours, gameOverState, explosions } = gameState;
 
         const localPlayer = players.find(p => p.id === myUserId);
         if (!localPlayer) return;
@@ -161,7 +364,7 @@ export class TankRenderer
 
         // Calculate camera transform to follow local player
         // Show more of the world (wider view)
-        const scaleX = cw / 2400; // Show ~2400 units width
+        const scaleX = cw / 2400; // Show ~2400 units width (your Option B)
         const scaleY = ch / 1350; // Show ~1350 units height
         const scale = Math.min(scaleX, scaleY);
 
@@ -175,119 +378,25 @@ export class TankRenderer
         ctx.fillStyle = '#0a0e14';
         ctx.fillRect(0, 0, cw, ch);
 
+        // Apply camera transform (world -> screen)
         ctx.translate(camX, camY);
         ctx.scale(scale, scale);
+
+        // compute camera world bounds for culling (in world coords)
+        const camHalfW = (cw / scale) / 2;
+        const camHalfH = (ch / scale) / 2;
+        const camRect = {
+            xMin: localPlayer.x - camHalfW,
+            xMax: localPlayer.x + camHalfW,
+            yMin: localPlayer.y - camHalfH,
+            yMax: localPlayer.y + camHalfH
+        };
 
         // Grid
         this.drawGrid(ctx, world);
 
-        // Buildings with interior patterns
-        buildings.forEach(bld =>
-        {
-            // Dark base fill
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-            ctx.fillRect(bld.x, bld.y, bld.w, bld.h);
-
-            // Draw interior pattern with neon color
-            ctx.strokeStyle = bld.color || '#0cf';
-            ctx.lineWidth = 2;
-
-            const spacing = 20;
-            ctx.beginPath();
-
-            switch (bld.pattern)
-            {
-                case 'diagonal':
-                    // FIXED: Cross-diagonal lines that stay within building bounds
-                    // Draw diagonals from top-left to bottom-right
-                    for (let offset = 0; offset <= bld.w + bld.h; offset += spacing)
-                    {
-                        let startX = bld.x;
-                        let startY = bld.y + offset;
-                        let endX = bld.x + offset;
-                        let endY = bld.y;
-
-                        // Clip to building bounds
-                        if (startY > bld.y + bld.h)
-                        {
-                            startX = bld.x + (startY - (bld.y + bld.h));
-                            startY = bld.y + bld.h;
-                        }
-                        if (endX > bld.x + bld.w)
-                        {
-                            endY = bld.y + (endX - (bld.x + bld.w));
-                            endX = bld.x + bld.w;
-                        }
-
-                        ctx.moveTo(startX, startY);
-                        ctx.lineTo(endX, endY);
-                    }
-
-                    // Draw diagonals from bottom-left to top-right
-                    for (let offset = 0; offset <= bld.w + bld.h; offset += spacing)
-                    {
-                        let startX = bld.x;
-                        let startY = bld.y + bld.h - offset;
-                        let endX = bld.x + offset;
-                        let endY = bld.y + bld.h;
-
-                        // Clip to building bounds
-                        if (startY < bld.y)
-                        {
-                            startX = bld.x + (bld.y - startY);
-                            startY = bld.y;
-                        }
-                        if (endX > bld.x + bld.w)
-                        {
-                            endY = bld.y + bld.h - (endX - (bld.x + bld.w));
-                            endX = bld.x + bld.w;
-                        }
-
-                        ctx.moveTo(startX, startY);
-                        ctx.lineTo(endX, endY);
-                    }
-                    break;
-
-                case 'horizontal':
-                    // Straight horizontal lines
-                    for (let y = bld.y + spacing; y < bld.y + bld.h; y += spacing)
-                    {
-                        ctx.moveTo(bld.x, y);
-                        ctx.lineTo(bld.x + bld.w, y);
-                    }
-                    break;
-
-                case 'vertical':
-                    // Vertical lines
-                    for (let x = bld.x + spacing; x < bld.x + bld.w; x += spacing)
-                    {
-                        ctx.moveTo(x, bld.y);
-                        ctx.lineTo(x, bld.y + bld.h);
-                    }
-                    break;
-
-                case 'cross':
-                    // Both horizontal and vertical (grid)
-                    for (let y = bld.y + spacing; y < bld.y + bld.h; y += spacing)
-                    {
-                        ctx.moveTo(bld.x, y);
-                        ctx.lineTo(bld.x + bld.w, y);
-                    }
-                    for (let x = bld.x + spacing; x < bld.x + bld.w; x += spacing)
-                    {
-                        ctx.moveTo(x, bld.y);
-                        ctx.lineTo(x, bld.y + bld.h);
-                    }
-                    break;
-            }
-
-            ctx.stroke();
-
-            // Building outline
-            ctx.strokeStyle = '#0cf';
-            ctx.lineWidth = 3;
-            ctx.strokeRect(bld.x, bld.y, bld.w, bld.h);
-        });
+        // Buildings (polygons OR legacy rects), only visible ones are drawn
+        this.renderBuildings(ctx, buildings, camRect);
 
         // Projectiles
         projectiles.forEach(proj =>
@@ -305,9 +414,9 @@ export class TankRenderer
         });
 
         // Explosions
-        this.renderExplosions(ctx, gameState.explosions, colours);
+        this.renderExplosions(ctx, explosions || [], colours);
 
-        // Tanks
+        // Tanks (unchanged rendering)
         players.forEach(tank =>
         {
             if (!tank.isAlive) return;
@@ -334,7 +443,6 @@ export class TankRenderer
             ctx.lineWidth = 3;
 
             // Hull shape: wedge front, rectangular rear
-            // Hull shape: streamlined wedge with tapered front and angled corners
             ctx.beginPath();
             ctx.moveTo(30, 0);          // Front center point (flat front)
             ctx.lineTo(22, -10);        // Front left angled corner
@@ -401,8 +509,6 @@ export class TankRenderer
             }
 
             // Engine glow at rear
-            ctx.shadowBlur = 15;
-            ctx.shadowColor = '#f44';
             ctx.strokeStyle = '#f66';
             ctx.lineWidth = 1;
             ctx.beginPath();
@@ -432,23 +538,21 @@ export class TankRenderer
             ctx.restore();
 
             // Draw turret (rotates independently) - hexagonal lozenge shape
-            // Draw turret (rotates independently) - DOUBLED SIZE
             ctx.save();
             ctx.rotate(tank.turretAngle);
 
-            // Turret base (larger hexagonal lozenge - doubled)
+            // Turret base (larger hexagonal lozenge)
             ctx.fillStyle = color;
             ctx.strokeStyle = '#000';
             ctx.lineWidth = 3;
 
-            // Doubled hexagonal lozenge shape
             ctx.beginPath();
-            ctx.moveTo(-16, 0);         // Left point (doubled)
-            ctx.lineTo(-10, -20);       // Top left (doubled)
-            ctx.lineTo(10, -20);        // Top right (doubled)
-            ctx.lineTo(16, 0);          // Right point (doubled)
-            ctx.lineTo(10, 20);         // Bottom right (doubled)
-            ctx.lineTo(-10, 20);        // Bottom left (doubled)
+            ctx.moveTo(-16, 0);
+            ctx.lineTo(-10, -20);
+            ctx.lineTo(10, -20);
+            ctx.lineTo(16, 0);
+            ctx.lineTo(10, 20);
+            ctx.lineTo(-10, 20);
             ctx.closePath();
             ctx.fill();
             ctx.stroke();
@@ -471,12 +575,12 @@ export class TankRenderer
             ctx.fillStyle = '#333';
             ctx.strokeStyle = '#000';
             ctx.lineWidth = 3;
-            ctx.fillRect(16, -8, 56, 16);  // Doubled barrel length and width
+            ctx.fillRect(16, -8, 56, 16);
             ctx.strokeRect(16, -8, 56, 16);
 
             // Barrel tip highlight
             ctx.fillStyle = color;
-            ctx.fillRect(64, -5, 8, 10);  // Doubled barrel tip
+            ctx.fillRect(64, -5, 8, 10);
 
             // Barrel detail
             ctx.strokeStyle = '#555';
