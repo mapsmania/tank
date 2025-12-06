@@ -2,7 +2,7 @@
 // Racing game logic using WebRTC peer-to-peer synchronization
 // ⭐ Modified from Tank of Duty — all combat removed, goal-based racing gameplay added.
 
-export class RacingGame
+export class TankGame
 {
     constructor(options, renderer, sendMessageFn, broadcastMessageFn, soundManager)
     {
