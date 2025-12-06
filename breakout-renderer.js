@@ -310,8 +310,8 @@ export class TankRenderer
         // FINISH LINE MARKER
 if (world.finishX !== undefined && world.finishY !== undefined)
 {
-    const fx = world.finishX;
-    const fy = world.finishY;
+    const fx = world.destination.x;
+    const fy = world.destination.y;
 
     ctx.save();
     ctx.translate(fx, fy);
