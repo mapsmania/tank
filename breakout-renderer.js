@@ -307,6 +307,44 @@ export class TankRenderer
         // Explosions
         this.renderExplosions(ctx, gameState.explosions, colours);
 
+        // FINISH LINE MARKER
+if (world.finishX !== undefined && world.finishY !== undefined)
+{
+    const fx = world.finishX;
+    const fy = world.finishY;
+
+    ctx.save();
+    ctx.translate(fx, fy);
+
+    const size = 120; // flag width
+    const square = 20; // checkered square size
+
+    // Flag pole
+    ctx.fillStyle = '#444';
+    ctx.fillRect(-10, -size / 2, 10, size * 1.2);
+
+    // Checkered flag
+    for (let y = 0; y < size; y += square)
+    {
+        for (let x = 0; x < size; x += square)
+        {
+            const isBlack = ((x / square) + (y / square)) % 2 === 0;
+            ctx.fillStyle = isBlack ? '#000' : '#fff';
+            ctx.fillRect(x, y - size / 2, square, square);
+        }
+    }
+
+    // Optional glowing outline
+    ctx.strokeStyle = '#0cf';
+    ctx.lineWidth = 4;
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = '#0cf';
+    ctx.strokeRect(0, -size / 2, size, size);
+
+    ctx.restore();
+}
+
+
         // Tanks
         players.forEach(tank =>
         {
@@ -431,66 +469,7 @@ export class TankRenderer
 
             ctx.restore();
 
-            // Draw turret (rotates independently) - hexagonal lozenge shape
-            // Draw turret (rotates independently) - DOUBLED SIZE
-            ctx.save();
-            ctx.rotate(tank.turretAngle);
-
-            // Turret base (larger hexagonal lozenge - doubled)
-            ctx.fillStyle = color;
-            ctx.strokeStyle = '#000';
-            ctx.lineWidth = 3;
-
-            // Doubled hexagonal lozenge shape
-            ctx.beginPath();
-            ctx.moveTo(-16, 0);         // Left point (doubled)
-            ctx.lineTo(-10, -20);       // Top left (doubled)
-            ctx.lineTo(10, -20);        // Top right (doubled)
-            ctx.lineTo(16, 0);          // Right point (doubled)
-            ctx.lineTo(10, 20);         // Bottom right (doubled)
-            ctx.lineTo(-10, 20);        // Bottom left (doubled)
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-
-            // Turret glow
-            ctx.shadowBlur = 15;
-            ctx.shadowColor = color;
-            ctx.beginPath();
-            ctx.moveTo(-16, 0);
-            ctx.lineTo(-10, -20);
-            ctx.lineTo(10, -20);
-            ctx.lineTo(16, 0);
-            ctx.lineTo(10, 20);
-            ctx.lineTo(-10, 20);
-            ctx.closePath();
-            ctx.stroke();
-            ctx.shadowBlur = 0;
-
-            // Gun barrel (longer and thicker)
-            ctx.fillStyle = '#333';
-            ctx.strokeStyle = '#000';
-            ctx.lineWidth = 3;
-            ctx.fillRect(16, -8, 56, 16);  // Doubled barrel length and width
-            ctx.strokeRect(16, -8, 56, 16);
-
-            // Barrel tip highlight
-            ctx.fillStyle = color;
-            ctx.fillRect(64, -5, 8, 10);  // Doubled barrel tip
-
-            // Barrel detail
-            ctx.strokeStyle = '#555';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(20, -4);
-            ctx.lineTo(64, -4);
-            ctx.moveTo(20, 4);
-            ctx.lineTo(64, 4);
-            ctx.stroke();
-
-            ctx.restore();
-            ctx.restore();
-
+            
             // Name tag with background
             ctx.save();
             ctx.font = 'bold 18px sans-serif';
