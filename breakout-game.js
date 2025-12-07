@@ -441,7 +441,7 @@ export class TankGame
             const input = tank.isLocal ? this.localInput : tank.remoteInput || {};
 
             // Update tank physics
-            const speed = 220;
+            const speed = 320;
             const turnRate = 2.4;
 
             tank.hullAngle += (input.turn || 0) * turnRate * dt;
