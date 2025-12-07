@@ -453,41 +453,6 @@ export class TankRenderer
             ctx.fill();
             ctx.stroke();
 
-            // Turret glow
-            ctx.shadowBlur = 15;
-            ctx.shadowColor = color;
-            ctx.beginPath();
-            ctx.moveTo(-16, 0);
-            ctx.lineTo(-10, -20);
-            ctx.lineTo(10, -20);
-            ctx.lineTo(16, 0);
-            ctx.lineTo(10, 20);
-            ctx.lineTo(-10, 20);
-            ctx.closePath();
-            ctx.stroke();
-            ctx.shadowBlur = 0;
-
-            // Gun barrel (longer and thicker)
-            ctx.fillStyle = '#333';
-            ctx.strokeStyle = '#000';
-            ctx.lineWidth = 3;
-            ctx.fillRect(16, -8, 56, 16);  // Doubled barrel length and width
-            ctx.strokeRect(16, -8, 56, 16);
-
-            // Barrel tip highlight
-            ctx.fillStyle = color;
-            ctx.fillRect(64, -5, 8, 10);  // Doubled barrel tip
-
-            // Barrel detail
-            ctx.strokeStyle = '#555';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(20, -4);
-            ctx.lineTo(64, -4);
-            ctx.moveTo(20, 4);
-            ctx.lineTo(64, 4);
-            ctx.stroke();
-
             ctx.restore();
             ctx.restore();
 
